@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # CONFIG - Update with your server URL
-SERVER_URL="${NODEBAY_SERVER_URL:-https://your-server.com}"
+SERVER_URL="https://1f2e4a0b33d9.ngrok-free.app"
 
 echo "=== Starting Claude Code Terminal ==="
 echo "Codespace: $CODESPACE_NAME"
