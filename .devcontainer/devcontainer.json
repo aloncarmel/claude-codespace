@@ -1,0 +1,16 @@
+{
+  "name": "Claude Code",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "onCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/start-terminal.sh",
+  "forwardPorts": [7681],
+  "portsAttributes": {
+    "7681": { "label": "Terminal", "visibility": "private" }
+  }
+}
