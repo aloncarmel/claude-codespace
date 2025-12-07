@@ -1,45 +1,169 @@
 #!/bin/bash
+set -e
 
-# CONFIG - Update with your server URL
-SERVER_URL="https://1f2e4a0b33d9.ngrok-free.app"
+# =============================================================================
+# start-terminal.sh
+# Starts ttyd terminal server and announces via Cloudflare Tunnel to Upstash
+# =============================================================================
 
-echo "=== Starting Claude Code Terminal ==="
-echo "Codespace: $CODESPACE_NAME"
+PORT=${TTYD_PORT:-7681}
+SHELL_CMD=${TTYD_SHELL:-bash}
 
-# Kill existing processes
-pkill ttyd 2>/dev/null || true
-pkill cloudflared 2>/dev/null || true
-sleep 1
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# Start ttyd with Claude Code
-echo "Starting ttyd with Claude..."
-nohup ttyd -p 7681 -W claude > /tmp/ttyd.log 2>&1 &
+log_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+log_warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+log_error() { echo -e "${RED}❌ $1${NC}"; }
+
+# =============================================================================
+# Announce tunnel URL to Upstash Redis
+# =============================================================================
+announce_tunnel() {
+  local tunnel_url=$1
+  local codespace_name=${CODESPACE_NAME:-$(hostname)}
+  
+  if [ -z "$UPSTASH_REDIS_REST_URL" ] || [ -z "$UPSTASH_REDIS_REST_TOKEN" ]; then
+    log_warn "Upstash credentials not found in environment - skipping announcement"
+    return 1
+  fi
+  
+  log_info "Announcing tunnel to Upstash Redis..."
+  
+  local key="tunnel:${codespace_name}"
+  local timestamp=$(date +%s)000
+  local value=$(printf '{"url":"%s","timestamp":%s}' "$tunnel_url" "$timestamp")
+  
+  # SET with 2 hour TTL (7200 seconds)
+  local response=$(curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
+    -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "[\"SET\", \"${key}\", \"${value}\", \"EX\", \"7200\"]" \
+    --connect-timeout 10 \
+    --max-time 15)
+  
+  if echo "$response" | grep -q '"result":"OK"'; then
+    log_success "Tunnel announced: $tunnel_url"
+    return 0
+  else
+    log_error "Failed to announce tunnel: $response"
+    return 1
+  fi
+}
+
+announce_with_retry() {
+  local tunnel_url=$1
+  local max_attempts=5
+  local attempt=1
+  
+  while [ $attempt -le $max_attempts ]; do
+    if announce_tunnel "$tunnel_url"; then
+      return 0
+    fi
+    log_warn "Announcement attempt $attempt/$max_attempts failed, retrying in ${attempt}s..."
+    sleep $attempt
+    attempt=$((attempt + 1))
+  done
+  
+  log_error "All announcement attempts failed"
+  return 1
+}
+
+# =============================================================================
+# Cleanup function
+# =============================================================================
+cleanup() {
+  log_info "Shutting down..."
+  [ -n "$TTYD_PID" ] && kill $TTYD_PID 2>/dev/null
+  [ -n "$TUNNEL_PID" ] && kill $TUNNEL_PID 2>/dev/null
+  
+  # Remove tunnel entry from Redis on shutdown
+  if [ -n "$UPSTASH_REDIS_REST_URL" ] && [ -n "$UPSTASH_REDIS_REST_TOKEN" ]; then
+    local codespace_name=${CODESPACE_NAME:-$(hostname)}
+    curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
+      -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "[\"DEL\", \"tunnel:${codespace_name}\"]" >/dev/null 2>&1
+  fi
+  
+  exit 0
+}
+
+trap cleanup SIGINT SIGTERM EXIT
+
+# =============================================================================
+# Main
+# =============================================================================
+log_info "Starting terminal server..."
+log_info "Codespace: ${CODESPACE_NAME:-unknown}"
+log_info "Port: $PORT"
+
+# Check for required tools
+if ! command -v ttyd &> /dev/null; then
+  log_error "ttyd not found. Please install ttyd first."
+  exit 1
+fi
+
+if ! command -v cloudflared &> /dev/null; then
+  log_error "cloudflared not found. Please install cloudflared first."
+  exit 1
+fi
+
+# Start ttyd in background
+log_info "Starting ttyd server..."
+ttyd -p $PORT -W $SHELL_CMD &
+TTYD_PID=$!
+log_success "ttyd started (PID: $TTYD_PID)"
+
+# Wait for ttyd to be ready
 sleep 2
 
-if ! pgrep ttyd > /dev/null; then
-  echo "✗ ttyd failed to start"
-  cat /tmp/ttyd.log
+# Verify ttyd is running
+if ! kill -0 $TTYD_PID 2>/dev/null; then
+  log_error "ttyd failed to start"
   exit 1
 fi
 
-# Start cloudflared tunnel
-echo "Starting tunnel..."
-nohup cloudflared tunnel --url http://localhost:7681 > /tmp/cloudflared.log 2>&1 &
+# Start cloudflared tunnel and capture URL
+log_info "Starting Cloudflare tunnel..."
+
+# Create a temp file to capture the tunnel URL
+TUNNEL_URL_FILE=$(mktemp)
+
+# Start cloudflared and process output
+cloudflared tunnel --url http://localhost:$PORT 2>&1 | while IFS= read -r line; do
+  echo "$line"
+  
+  # Look for the tunnel URL in the output
+  if echo "$line" | grep -qE 'https://[a-z0-9-]+\.trycloudflare\.com'; then
+    TUNNEL_URL=$(echo "$line" | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1)
+    if [ -n "$TUNNEL_URL" ]; then
+      echo "$TUNNEL_URL" > "$TUNNEL_URL_FILE"
+      log_success "Tunnel URL: $TUNNEL_URL"
+      
+      # Announce to Upstash in background
+      (announce_with_retry "$TUNNEL_URL") &
+    fi
+  fi
+done &
+TUNNEL_PID=$!
+
+# Wait a bit for tunnel to establish
 sleep 5
 
-# Get tunnel URL
-TUNNEL_URL=$(grep -o 'https://[^[:space:]]*\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
-
-if [ -z "$TUNNEL_URL" ]; then
-  echo "✗ Failed to get tunnel URL"
-  exit 1
+# Check if we got a URL
+if [ -f "$TUNNEL_URL_FILE" ] && [ -s "$TUNNEL_URL_FILE" ]; then
+  FINAL_URL=$(cat "$TUNNEL_URL_FILE")
+  log_success "Terminal ready at: $FINAL_URL"
+else
+  log_warn "Tunnel URL not captured yet - it may appear in the logs above"
 fi
 
-echo "✓ Tunnel: $TUNNEL_URL"
-
-# Announce to server
-curl -s -X POST "$SERVER_URL/api/announce" \
-  -H "Content-Type: application/json" \
-  -d "{\"codespace\": \"$CODESPACE_NAME\", \"url\": \"$TUNNEL_URL\"}" || true
-
-echo "✓ Claude Code ready!"
+# Keep running
+log_info "Terminal server running. Press Ctrl+C to stop."
+wait $TUNNEL_PID
