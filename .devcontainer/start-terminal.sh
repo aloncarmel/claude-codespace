@@ -37,13 +37,18 @@ announce_tunnel() {
   
   local key="tunnel:${codespace_name}"
   local timestamp=$(date +%s)000
-  local value=$(printf '{"url":"%s","timestamp":%s}' "$tunnel_url" "$timestamp")
+  
+  # Properly escape the JSON value by escaping inner quotes
+  local escaped_value="{\\\"url\\\":\\\"${tunnel_url}\\\",\\\"timestamp\\\":${timestamp}}"
+  
+  # Build the JSON payload
+  local payload="[\"SET\", \"${key}\", \"${escaped_value}\", \"EX\", \"7200\"]"
   
   # SET with 2 hour TTL (7200 seconds)
   local response=$(curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
     -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "[\"SET\", \"${key}\", \"${value}\", \"EX\", \"7200\"]" \
+    -d "${payload}" \
     --connect-timeout 10 \
     --max-time 15)
   
