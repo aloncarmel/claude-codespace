@@ -22,11 +22,11 @@ log_warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error() { echo -e "${RED}❌ $1${NC}"; }
 
 # =============================================================================
-# Announce tunnel URL to Upstash Redis
+# Announce tunnel URL to Upstash Redis (FIXED - stores URL directly)
 # =============================================================================
 announce_tunnel() {
-  local tunnel_url=$1
-  local codespace_name=${CODESPACE_NAME:-$(hostname)}
+  local tunnel_url="$1"
+  local codespace_name="${CODESPACE_NAME:-$(hostname)}"
   
   if [ -z "$UPSTASH_REDIS_REST_URL" ] || [ -z "$UPSTASH_REDIS_REST_TOKEN" ]; then
     log_warn "Upstash credentials not found in environment - skipping announcement"
@@ -36,19 +36,13 @@ announce_tunnel() {
   log_info "Announcing tunnel to Upstash Redis..."
   
   local key="tunnel:${codespace_name}"
-  local timestamp=$(date +%s)000
   
-  # Properly escape the JSON value by escaping inner quotes
-  local escaped_value="{\\\"url\\\":\\\"${tunnel_url}\\\",\\\"timestamp\\\":${timestamp}}"
-  
-  # Build the JSON payload
-  local payload="[\"SET\", \"${key}\", \"${escaped_value}\", \"EX\", \"7200\"]"
-  
-  # SET with 2 hour TTL (7200 seconds)
-  local response=$(curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
+  # Store just the URL directly - no nested JSON!
+  local response
+  response=$(curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
     -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "${payload}" \
+    --data-raw "[\"SET\", \"${key}\", \"${tunnel_url}\", \"EX\", \"7200\"]" \
     --connect-timeout 10 \
     --max-time 15)
   
@@ -62,7 +56,7 @@ announce_tunnel() {
 }
 
 announce_with_retry() {
-  local tunnel_url=$1
+  local tunnel_url="$1"
   local max_attempts=5
   local attempt=1
   
@@ -84,16 +78,16 @@ announce_with_retry() {
 # =============================================================================
 cleanup() {
   log_info "Shutting down..."
-  [ -n "$TTYD_PID" ] && kill $TTYD_PID 2>/dev/null
-  [ -n "$TUNNEL_PID" ] && kill $TUNNEL_PID 2>/dev/null
+  [ -n "$TTYD_PID" ] && kill $TTYD_PID 2>/dev/null || true
+  [ -n "$TUNNEL_PID" ] && kill $TUNNEL_PID 2>/dev/null || true
   
   # Remove tunnel entry from Redis on shutdown
   if [ -n "$UPSTASH_REDIS_REST_URL" ] && [ -n "$UPSTASH_REDIS_REST_TOKEN" ]; then
-    local codespace_name=${CODESPACE_NAME:-$(hostname)}
+    local codespace_name="${CODESPACE_NAME:-$(hostname)}"
     curl -s -X POST "${UPSTASH_REDIS_REST_URL}" \
       -H "Authorization: Bearer ${UPSTASH_REDIS_REST_TOKEN}" \
       -H "Content-Type: application/json" \
-      -d "[\"DEL\", \"tunnel:${codespace_name}\"]" >/dev/null 2>&1
+      --data-raw "[\"DEL\", \"tunnel:${codespace_name}\"]" >/dev/null 2>&1 || true
   fi
   
   exit 0
@@ -137,9 +131,6 @@ fi
 # Start cloudflared tunnel and capture URL
 log_info "Starting Cloudflare tunnel..."
 
-# Create a temp file to capture the tunnel URL
-TUNNEL_URL_FILE=$(mktemp)
-
 # Start cloudflared and process output
 cloudflared tunnel --url http://localhost:$PORT 2>&1 | while IFS= read -r line; do
   echo "$line"
@@ -148,7 +139,6 @@ cloudflared tunnel --url http://localhost:$PORT 2>&1 | while IFS= read -r line; 
   if echo "$line" | grep -qE 'https://[a-z0-9-]+\.trycloudflare\.com'; then
     TUNNEL_URL=$(echo "$line" | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1)
     if [ -n "$TUNNEL_URL" ]; then
-      echo "$TUNNEL_URL" > "$TUNNEL_URL_FILE"
       log_success "Tunnel URL: $TUNNEL_URL"
       
       # Announce to Upstash in background
@@ -157,17 +147,6 @@ cloudflared tunnel --url http://localhost:$PORT 2>&1 | while IFS= read -r line; 
   fi
 done &
 TUNNEL_PID=$!
-
-# Wait a bit for tunnel to establish
-sleep 5
-
-# Check if we got a URL
-if [ -f "$TUNNEL_URL_FILE" ] && [ -s "$TUNNEL_URL_FILE" ]; then
-  FINAL_URL=$(cat "$TUNNEL_URL_FILE")
-  log_success "Terminal ready at: $FINAL_URL"
-else
-  log_warn "Tunnel URL not captured yet - it may appear in the logs above"
-fi
 
 # Keep running
 log_info "Terminal server running. Press Ctrl+C to stop."
