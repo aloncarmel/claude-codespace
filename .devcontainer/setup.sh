@@ -1,29 +1,25 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Setting up Claude CLI environment..."
+echo "=== Installing Claude Code Environment ==="
 
-# Update packages
+# Install system packages
 sudo apt-get update
+sudo apt-get install -y curl jq
 
 # Install ttyd
-echo "📦 Installing ttyd..."
-sudo apt-get install -y ttyd
+echo "Installing ttyd..."
+wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /tmp/ttyd
+sudo mv /tmp/ttyd /usr/local/bin/ttyd
+sudo chmod +x /usr/local/bin/ttyd
 
 # Install cloudflared
-echo "📦 Installing cloudflared..."
+echo "Installing cloudflared..."
 curl -L --output /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 sudo dpkg -i /tmp/cloudflared.deb
-rm /tmp/cloudflared.deb
 
-# Install Claude CLI (Anthropic)
-echo "📦 Installing Claude CLI..."
+# Install Claude Code CLI
+echo "Installing Claude Code CLI..."
 npm install -g @anthropic-ai/claude-code
 
-# Verify installations
-echo ""
-echo "✅ Installation complete!"
-echo "   - ttyd: $(ttyd --version 2>&1 | head -1)"
-echo "   - cloudflared: $(cloudflared --version 2>&1 | head -1)"
-echo "   - claude: $(which claude)"
-echo ""
+echo "✓ Claude Code setup complete!"

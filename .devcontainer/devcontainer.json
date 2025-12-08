@@ -8,7 +8,7 @@
     }
   },
   "onCreateCommand": "bash .devcontainer/setup.sh",
-  "postStartCommand": "setsid bash .devcontainer/start-terminal.sh > /tmp/startup.log 2>&1 &",
+  "postStartCommand": "bash .devcontainer/start-terminal.sh",
   "forwardPorts": [7681],
   "portsAttributes": {
     "7681": { "label": "Terminal", "visibility": "private" }
